@@ -200,22 +200,6 @@ int ord_cmp_asc(const void* a, const void* b) {
     return (arg1->relevance > arg2->relevance) - (arg1->relevance < arg2->relevance);
 }                                                                                                                                 
 
-void display_list(FILE* stream, library_t lib, enum order_by order_by) {
-  fprintf(stream, "Listing sources of library: \"" PRI_SS "\"\n", SS_FMT(lib.name));
-
-  switch (order_by) {
-    case ORD_NONE: break;
-    case ORD_REL_DESC: vec_sort(&lib.sources, ord_cmp_desc); break;
-    case ORD_REL_ASC:  vec_sort(&lib.sources, ord_cmp_asc); break;
-    default:
-      UNREACHABLE("Unknown display_list order by");
-  }
-
-  vec_foreach(p, &lib.sources) {
-    fprintf(stream, "[%d/5] (%04d) \"" PRI_SS "\"\n", p->relevance, p->id, SS_FMT(p->title));
-  }
-}
-
 
 static char* arg_shift(int *argc, char ***argv) {
     assert(*argc > 0);
@@ -232,6 +216,12 @@ typedef struct {
 } command_t;
 
 void list_commands(FILE* stream);
+static void print_heading(FILE* stream, const char* heading);
+static void print_line(FILE* stream, ss_t line);
+static void print_paragraph(FILE* stream, ss_t par);
+
+const int padding  = 5;
+const int line_len = 100;
 
 #define COMMAND(n, f, d) (command_t){ .name = n, .fn = f, .desc = d }
 
@@ -255,6 +245,12 @@ typedef struct {
 } arg_ctx_t;
 
 arg_ctx_t g_arg_ctx = { 0 };
+
+void clear_arg_ctx() {
+  vec_reset(&g_arg_ctx.pos);
+  vec_reset(&g_arg_ctx.opt);
+  g_arg_ctx.last_error_message = NULL;
+}
 
 struct _arg_def {
   const char* desc;
@@ -289,25 +285,45 @@ size_t __arg_impl(const char* name, struct _arg_def arg_def) {
 void print_arg(FILE* stream, const arg_t* arg) {
   sb_t sb = { 0 };
 
-  if (arg->opt) sb_appendf(&sb, "  " OPT_ARG_PREFIX "%-13s ", arg->name);
-  else          sb_appendf(&sb, "  %-15s ", arg->name);
+  if (arg->opt) sb_appendf(&sb, OPT_ARG_PREFIX "%-13s ", arg->name);
+  else          sb_appendf(&sb, "%-15s ", arg->name);
 
-  sb_appendf(&sb, "%-8s %-30s ", arg->no_value ? "" : arg->type, arg->desc);
+  sb_appendf(&sb, "%-8s ", arg->no_value ? "" : arg->type);
+  sb_appendf(&sb, "%s ", arg->desc);
   if (arg->default_val)
-    sb_appendf(&sb, "Default: %s.", arg->default_val);
+    sb_appendf(&sb, "DEFAULT: %s.", arg->default_val);
 
-  fprintf(stream, PRI_SB "\n", SB_FMT(sb));
+  print_line(stream, ss_from_sb(sb));
+}
+
+void print_usage(FILE* stream, const char* progname) {
+  print_heading(stream, "USAGE");
+
+  sb_t sb = { 0 };
+  sb_appendf(&sb, "%s ", progname);
+  vec_foreach(a, &g_arg_ctx.pos) {
+    sb_appendf(&sb, "<%s> ", a->name);
+  }
+  sb_append(&sb, "[OPTIONS]");
+  print_line(stream, ss_from_sb(sb));
+
+  sb_free(&sb);
 }
 
 void print_args(FILE* stream) {
-  fprintf(stream, "ARGS:\n");
+  print_heading(stream, "ARGS");
   vec_foreach(a, &g_arg_ctx.pos) {
     print_arg(stream, a);
   }
-  fprintf(stream, "OPTIONS:\n");
+  print_heading(stream, "OPTIONS");
   vec_foreach(a, &g_arg_ctx.opt) {
     print_arg(stream, a);
   }
+}
+
+void print_arg_last_error(FILE* stream) {
+  print_heading(stream, "ERROR");
+  print_line(stream, ss_from_cstr(g_arg_ctx.last_error_message));
 }
 
 size_t arg_pos_count() {
@@ -328,21 +344,21 @@ bool arg_present(size_t arg_idx) {
   else                   return vec_get(&g_arg_ctx.opt, arg_idx & ~POS_BIT).present;
 }
 
-bool arg_parse(int* argc, char*** argv) {
+bool arg_parse(int* argc, char*** argv, int limit) {
   sb_t sb = { 0 };
-
-  if (*argc < arg_pos_count()) {
-    sb_appendf(&sb, "ERROR: Not enough positional arguments passed.");
-    sb_appendz(&sb, "");
-    g_arg_ctx.last_error_message = sb.data;
-    return false;
-  }
+  //
+  // if (*argc < arg_pos_count()) {
+  //   sb_appendf(&sb, "Not enough positional arguments passed: Missing <%s>.", vec_get(&g_arg_ctx.pos, *argc).name);
+  //   sb_appendz(&sb, "");
+  //   g_arg_ctx.last_error_message = sb.data;
+  //   return false;
+  // }
 
   size_t positional = 0;
-  while (*argc) {
+  while (*argc && limit--) {
     const char* arg = arg_shift(argc, argv);
 
-    if (*arg != *OPT_ARG_PREFIX) {
+    if (*arg != *OPT_ARG_PREFIX && positional < arg_pos_count()) {
       vec_get(&g_arg_ctx.pos, positional).present = true;
       vec_get(&g_arg_ctx.pos, positional).value   = arg;
       positional++;
@@ -354,7 +370,7 @@ bool arg_parse(int* argc, char*** argv) {
           
           if (!a->no_value) {
             if (*argc == 0) {
-              sb_appendf(&sb, "ERROR: No value provided for `" OPT_ARG_PREFIX "%s` option.", a->name);
+              sb_appendf(&sb, "No value provided for `" OPT_ARG_PREFIX "%s` option.", a->name);
               sb_appendz(&sb, "");
               g_arg_ctx.last_error_message = sb.data;
               return false;
@@ -367,15 +383,15 @@ bool arg_parse(int* argc, char*** argv) {
       }
       if (found) continue;
 
-      sb_appendf(&sb, "ERROR: Unrecognized optional argument `%s`", arg);
+      sb_appendf(&sb, "Unrecognized optional argument `%s`", arg);
       sb_appendz(&sb, "");
       g_arg_ctx.last_error_message = sb.data;
       return false;
     }
   }
 
-  if (positional + 1 < arg_pos_count()) {
-    sb_appendf(&sb, "ERROR: Not enough positional arguments passed.");
+  if (positional < arg_pos_count()) {
+    sb_appendf(&sb, "Not enough positional arguments passed: Missing <%s>.", vec_get(&g_arg_ctx.pos, positional).name);
     sb_appendz(&sb, "");
     g_arg_ctx.last_error_message = sb.data;
     return false;
@@ -385,27 +401,32 @@ bool arg_parse(int* argc, char*** argv) {
 }
 
 int do_list(const char* progname, int argc, char** argv) {
-  library_t library = { 0 };
+  clear_arg_ctx();
 
-  size_t file_arg  = arg("file", .type = "str", .desc = "Path to library file.");
+  library_t lib = { 0 };
 
+  size_t file_opt  = arg("file", .opt = true, .type = "str", .desc = "Path to library file.", .default_val = "library.toml");
   size_t help_opt  = arg("help", .opt = true, .type = "bool", .no_value = true, .desc = "Displays this page and exit with 0." );
-  size_t ord_opt   = arg("ord", .opt = true, .type = "str", .desc = "Order sources by relevance. Available options: [NONE, ASC, DESC].", .default_val = "DESC");
+  size_t ord_opt   = arg("sort", .opt = true, .type = "str", .desc = "Sort sources by relevance. Available options: [NONE, ASC, DESC].", .default_val = "DESC");
 
-  if (!arg_parse(&argc, &argv)) {
-    fprintf(stderr, "USAGE: %s list <file> [OPTIONS]\n", progname);
+  sb_t sb = { 0 };
+  sb_appendf(&sb, "%s list", progname);
+  sb_appendz(&sb, "");
+
+  if (!arg_parse(&argc, &argv, -1)) {
+    print_usage(stderr, sb.data);
     print_args(stderr);
-    fprintf(stderr, "%s\n", g_arg_ctx.last_error_message);
+    print_arg_last_error(stderr);
     return 1;
   }
 
   if (arg_present(help_opt)) {
-    fprintf(stdout, "USAGE: %s list <file> [OPTIONS]\n", progname);
+    print_usage(stdout, sb.data);
     print_args(stdout);
     return 0;
   }
 
-  deserialize_library_from_file(arg_value(file_arg), &library);
+  deserialize_library_from_file(arg_value(file_opt), &lib);
 
   enum order_by ob = ORD_NONE;
 
@@ -414,52 +435,134 @@ int do_list(const char* progname, int argc, char** argv) {
        if (strcmp(ord, "ASC") == 0)  ob = ORD_REL_ASC; 
   else if (strcmp(ord, "DESC") == 0) ob = ORD_REL_DESC; 
 
-  display_list(stdout, library, ob);
+  print_heading(stdout, "LIBRARY");
+  print_line(stdout, lib.name);
+
+  print_heading(stdout, "SOURCES");
+
+  switch (ob) {
+    case ORD_NONE: break;
+    case ORD_REL_DESC: vec_sort(&lib.sources, ord_cmp_desc); break;
+    case ORD_REL_ASC:  vec_sort(&lib.sources, ord_cmp_asc); break;
+    default:
+      UNREACHABLE("Unknown display_list order by");
+  }
+
+  print_line(stdout, ss_from_cstr("RELEV.   ID     TITLE"));
+  vec_foreach(p, &lib.sources) {
+    sb_t sb = { 0 };
+    sb_appendf(&sb, "%d ", p->relevance);
+    for (size_t i=0; i < 5; i++) {
+      if (i < p->relevance) sb_appendf(&sb, "*");
+      else                  sb_appendf(&sb, " ");
+    }
+    sb_appendf(&sb, "  %04d   ", p->id);
+    sb_appendf(&sb, PRI_SS, SS_FMT(p->title));
+    print_line(stdout, ss_from_sb(sb));
+  }
 
   return 0;
 }
 
+#define ANSI_PRE "\033["
+#define ANSI_POST "m"
+#define ANSI_RED_T    "31"
+#define ANSI_GREEN_T  "32"
+#define ANSI_YELLOW_T "33"
+#define ANSI_BLUE_T   "34"
+#define ANSI_VIOLET_T "35"
+#define ANSI_CYAN_T   "36"
+#define ANSI_GRAY_T   "37"
+#define ANSI_RED_B    "41"
+#define ANSI_GREEN_B  "42"
+#define ANSI_YELLOW_B "43"
+#define ANSI_BLUE_B   "44"
+#define ANSI_VIOLET_B "45"
+#define ANSI_CYAN_B   "46"
+#define ANSI_GRAY_B   "47"
+#define ANSI_NONE "0"
+#define ANSI_BOLD "1"
+
+static void print_heading(FILE* stream, const char* heading) {
+  fprintf(stream, "\n" ANSI_PRE ";" ANSI_BOLD ANSI_POST "%s" ANSI_PRE ANSI_NONE ANSI_POST "\n", heading);
+}
+
+static void print_line(FILE* stream, ss_t line) {
+  fprintf(stream, "%*s" PRI_SS "\n", padding, "", SS_FMT(line));
+}
+
+static void print_paragraph(FILE* stream, ss_t par) {
+  while (par.len) {
+    ss_t line = ss_sub(par, 0, line_len);
+    if (line.len >= line_len)
+      while (line.len && !isspace(line.data[--line.len]));
+    ss_advance_by_in_place(&par, line.len + 1);
+
+    print_line(stream, line);
+  }
+}
+
 int do_info(const char* progname, int argc, char** argv) {
+  clear_arg_ctx();
+
   library_t library = { 0 };
 
-  size_t file_arg  = arg("file", .type = "str", .desc = "Path to library file.");
   size_t id_arg    = arg("id",   .type = "int", .desc = "ID of the source in the <file>. Use list command to get list of IDs." );
 
-  size_t help_opt  = arg("help", .opt = true, .type = "bool", .no_value = true, .desc = "Displays this page and exit with 0." );
+  size_t file_opt  = arg("file", .opt = true, .type = "str", .desc = "Path to library file.", .default_val = "library.toml");
+  size_t help_opt  = arg("help", .opt = true, .type = "bool", .no_value = true, .desc = "Displays this page and exits with 0." );
 
-  if (!arg_parse(&argc, &argv)) {
-    fprintf(stderr, "USAGE: %s info <file> <id> [OPTIONS]\n", progname);
+  sb_t sb = { 0 };
+  sb_appendf(&sb, "%s info", progname);
+  sb_appendz(&sb, "");
+
+  if (!arg_parse(&argc, &argv, -1)) {
+    print_usage(stderr, sb.data);
     print_args(stderr);
-    fprintf(stderr, "%s\n", g_arg_ctx.last_error_message);
+    print_arg_last_error(stderr);
     return 1;
   }
 
   if (arg_present(help_opt)) {
-    fprintf(stdout, "USAGE: %s info <file> <id> [OPTIONS]\n", progname);
+    print_usage(stdout, sb.data);
     print_args(stdout);
     return 0;
   }
 
   int id = atoi(arg_value(id_arg));
 
-  deserialize_library_from_file(arg_value(file_arg), &library);
+  deserialize_library_from_file(arg_value(file_opt), &library);
 
   vec_foreach(s, &library.sources) {
     if (s->id == id) {
-      fprintf(stdout, "Title:   \"" PRI_SS "\"\n", SS_FMT(s->title));
+      print_heading(stdout, "TITLE");
+      print_paragraph(stdout, s->title);
 
-      fprintf(stderr, "Authors: ");
+      print_heading(stdout, "AUTHORS");
+
+      sb_t sb = { 0 };
       bool first = true;
       vec_foreach(a, &s->authors) {
-        fprintf(stdout, "%s" PRI_SS, first ? "" : ", ", SS_FMT(*a));
+        sb_appendf(&sb, "%s" PRI_SS, first ? "" : ", ", SS_FMT(*a));
         first = false;
       }
-      fprintf(stdout, "\n");
+      print_paragraph(stdout, ss_from_sb(sb));
+      sb_free(&sb);
+
+      print_heading(stdout, "ABSTRACT");
+      print_paragraph(stdout, s->abstract);
+
+      print_heading(stdout, "PATH");
+      print_line(stdout, s->path);
+
       return 0;
     }
   }
 
-  fprintf(stderr, "ERROR: No source found with id `%s` in library `%s`.\n", arg_value(id_arg), arg_value(file_arg));
+  sb_t err = { 0 };
+  sb_appendf(&err, "No source found with id `%s` in library `" PRI_SS "`.", arg_value(id_arg), SS_FMT(library.name));
+  print_heading(stderr, "ERROR");
+  print_line(stderr, ss_from_sb(err));
 
   return 1;
 }
@@ -467,8 +570,10 @@ int do_info(const char* progname, int argc, char** argv) {
 int do_help(const char* progname, int argc, char** argv) {
   (void)argc;
   (void)argv;
-  fprintf(stderr, "USAGE: %s <command>\n", progname);
+  print_usage(stdout, progname);
+  print_args(stdout);
   list_commands(stdout);
+  return 0;
   return 0;
 }
 
@@ -479,29 +584,42 @@ command_t commands[] = {
 };
 
 void list_commands(FILE* stream) {
-  fprintf(stream, "List of available commands:\n");
+  print_heading(stream, "COMMANDS");
   for (size_t i=0; i < sizeof(commands)/sizeof(*commands); i++) {
-    fprintf(stream, "  %-15s %s\n", commands[i].name, commands[i].desc);
+    sb_t sb = { 0 };
+    sb_appendf(&sb, "%-24s %s", commands[i].name, commands[i].desc);
+
+    print_line(stream, ss_from_sb(sb));
   }
 }
 
 int main(int argc, char** argv) {
   const char* progname = arg_shift(&argc, &argv);
 
-  if (argc < 1) {
-    fprintf(stderr, "USAGE: %s <command>\n", progname);
-    fprintf(stderr, "Missing command\n");
+  size_t cmd_arg  = arg("command", .type = "str", .desc = "Command to be executed.");
+
+  size_t help_opt  = arg("help", .opt = true, .type = "bool", .no_value = true, .desc = "Displays this page and exits with 0." );
+
+  if (!arg_parse(&argc, &argv, 1)) {
+    print_usage(stdout, progname);
+    print_args(stdout);
     list_commands(stderr);
+    print_arg_last_error(stderr);
     return 1;
   }
 
-  const char* cmd = arg_shift(&argc, &argv); 
-
-  for (size_t i=0; i < sizeof(commands)/sizeof(*commands); i++) {
-    if (strcmp(commands[i].name, cmd) == 0) return commands[i].fn(progname, argc, argv);
+  if (arg_present(help_opt)) {
+    print_usage(stdout, progname);
+    print_args(stdout);
+    list_commands(stdout);
+    return 0;
   }
 
-  fprintf(stderr, "Unrecognized command `%s`\n", cmd);
+  for (size_t i=0; i < sizeof(commands)/sizeof(*commands); i++) {
+    if (strcmp(commands[i].name, arg_value(cmd_arg)) == 0) return commands[i].fn(progname, argc, argv);
+  }
+
+  fprintf(stderr, "Unrecognized command `%s`\n", arg_value(cmd_arg));
   list_commands(stderr);
 
   return 1;
