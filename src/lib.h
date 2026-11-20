@@ -5,18 +5,23 @@
 #include "efh/ss.h"
 #include "efh/sb.h"
 
+typedef VEC(ss_t) ss_vec_t;
+
 typedef struct {
   int id;
   ss_t title;
-  VEC(ss_t) authors;
+  ss_vec_t authors;
   ss_t path;
-  VEC(ss_t) tags;
-  VEC(ss_t) keywords;
+  ss_vec_t tags;
+  ss_vec_t keywords;
   int relevance;
   ss_t doi;
   ss_t issn;
   ss_t url;
   ss_t abstract;
+  int year;
+  ss_t venue;
+  ss_t type;
 } source_t;
 
 typedef struct {

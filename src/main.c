@@ -10,6 +10,12 @@
 #include "display.h"
 #include "macros.h"
 
+#ifdef _WIN32
+#pragma comment(lib, "user32")
+#else
+#error "Platform not supported"
+#endif
+
 void print_arg(FILE* stream, const arg_t* arg);
 void print_usage(FILE* stream, const char* progname);
 void print_usage_command(FILE* stream, const char* progname, const char* command);
@@ -114,7 +120,7 @@ int do_info(const char* progname, int argc, char** argv) {
 
   library_t library = { 0 };
 
-  size_t id_arg    = arg("id",   .type = "int", .desc = "ID of the source in the <file>. Use list command to get list of IDs." );
+  size_t id_arg    = arg("id",   .type = "int", .desc = "ID of the source in the library. Use list command to get list of IDs." );
 
   size_t lib_opt   = arg("lib", .opt = true, .type = "str", .desc = "Path to library file.", .default_val = "library.toml");
   size_t help_opt  = arg("help", .opt = true, .type = "bool", .no_value = true, .desc = "Displays this page and exits with 0." );
@@ -285,7 +291,10 @@ int do_add(const char* progname, int argc, char** argv) {
   size_t doi_opt   = arg("doi",       .opt = true, .type = "str", .desc = "Specify the source doi.", .default_val = "");
   size_t issn_opt  = arg("issn",      .opt = true, .type = "str", .desc = "Specify the source issn.", .default_val = "");
   size_t abs_opt   = arg("abstract",  .opt = true, .type = "str", .desc = "Specify the source abstract.", .default_val = "");
-  size_t rel_opt   = arg("relevance", .opt = true, .type = "int", .desc = "Specify the source relevance.", .default_val = 0);
+  size_t rel_opt   = arg("relevance", .opt = true, .type = "int", .desc = "Specify the source relevance.", .default_val = "0");
+  size_t year_opt  = arg("year",      .opt = true, .type = "int", .desc = "Specify the source year.", .default_val = "0");
+  size_t type_opt  = arg("type",      .opt = true, .type = "str", .desc = "Specify the source type.", .default_val = "");
+  size_t venue_opt = arg("venue",     .opt = true, .type = "str", .desc = "Specify the source venue.", .default_val = "");
   size_t help_opt  = arg("help",      .opt = true, .type = "bool", .no_value = true, .desc = "Displays this page and exits with 0." );
 
   if (!arg_parse(&argc, &argv, -1)) {
@@ -312,11 +321,207 @@ int do_add(const char* progname, int argc, char** argv) {
     .doi       = ss_from_cstr(arg_value(doi_opt)),
     .issn      = ss_from_cstr(arg_value(issn_opt)),
     .relevance = atoi(arg_value(rel_opt)), 
+    .year      = atoi(arg_value(year_opt)), 
+    .venue     = ss_from_cstr(arg_value(venue_opt)),
+    .type      = ss_from_cstr(arg_value(type_opt)),
   };
 
   vec_push(&lib.sources, source);
 
   return !serialize_library_to_file(arg_value(lib_opt), &lib);
+}
+
+static void bib_field(sb_t* sb, const char* name, ss_t value) {
+  if (value.len > 0) sb_appendf(sb, "  %-12s = {" PRI_SS "},\n", name, SS_FMT(value));
+}
+
+static bool copy_to_clipboard(const sb_t* sb) {
+#ifdef _WIN32
+  int wlen = MultiByteToWideChar(CP_UTF8, 0, sb->data, (int)sb->len, NULL, 0);
+  HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, (wlen + 1) * sizeof(WCHAR));
+  if (!h) return false;
+  WCHAR* w = GlobalLock(h);
+  MultiByteToWideChar(CP_UTF8, 0, sb->data, (int)sb->len, w, wlen);
+  w[wlen] = 0;
+  GlobalUnlock(h);
+
+  if (!OpenClipboard(NULL)) { GlobalFree(h); return false; }
+  EmptyClipboard();
+  bool ok = SetClipboardData(CF_UNICODETEXT, h) != NULL;
+  CloseClipboard();
+  if (!ok) GlobalFree(h);
+  return ok;
+#else
+  (void)sb;
+  return false;
+#endif
+}
+
+int do_bibtex(const char* progname, int argc, char** argv) {
+  arg_clear_ctx();
+
+  library_t lib = { 0 };
+
+  size_t id_arg   = arg("id",   .type = "int", .desc = "ID of the source in the library. Use list command to get list of IDs." );
+
+  size_t lib_opt  = arg("lib",  .opt = true, .type = "str", .desc = "Path to library file.", .default_val = "library.toml");
+  size_t out_opt  = arg("o",    .opt = true, .type = "str", .desc = "Writes the BibTeX entry to a file.");
+  size_t clip_opt = arg("clip", .opt = true, .type = "bool", .no_value = true, .desc = "Copies the BibTeX entry to the clipboard.");
+  size_t help_opt = arg("help", .opt = true, .type = "bool", .no_value = true, .desc = "Displays this page and exits with 0." );
+
+  if (!arg_parse(&argc, &argv, -1)) {
+    print_usage_command(stderr, progname, arg_progname());
+    print_args(stderr);
+    print_arg_last_error(stderr);
+    return 1;
+  }
+
+  if (arg_present(help_opt)) {
+    print_usage_command(stdout, progname, arg_progname());
+    print_args(stdout);
+    return 0;
+  }
+
+  int id = atoi(arg_value(id_arg));
+
+  if (!deserialize_library_from_file(arg_value(lib_opt), &lib)) return 1;
+
+  vec_foreach(s, &lib.sources) {
+    if (s->id != id) continue;
+
+    sb_t sb = { 0 };
+    sb_t list = { 0 };
+
+    ss_t type = s->type.len > 0 ? s->type : ss_from_cstr("misc");
+    sb_appendf(&sb, "@" PRI_SS "{src%04d,\n", SS_FMT(type), s->id);
+    bib_field(&sb, "title", s->title);
+
+    vec_foreach(a, &s->authors) {
+      if (a->len == 0) continue;
+      sb_appendf(&list, "%s" PRI_SS, list.len ? " and " : "", SS_FMT(*a));
+    }
+    bib_field(&sb, "author", ss_from_sb(list));
+    sb_reset(&list);
+
+    // the BibTeX field holding the venue depends on the entry type
+    const char* venue_field = "howpublished";
+         if (ss_eq_cstr(type, "article"))       venue_field = "journal";
+    else if (ss_eq_cstr(type, "inproceedings") ||
+             ss_eq_cstr(type, "incollection")  ||
+             ss_eq_cstr(type, "conference"))    venue_field = "booktitle";
+    else if (ss_eq_cstr(type, "book"))          venue_field = "publisher";
+    bib_field(&sb, venue_field, s->venue);
+
+    if (s->year > 0) sb_appendf(&sb, "  %-12s = {%d},\n", "year", s->year);
+
+    bib_field(&sb, "doi",  s->doi);
+    bib_field(&sb, "issn", s->issn);
+    bib_field(&sb, "url",  s->url);
+
+    vec_foreach(k, &s->keywords) {
+      sb_appendf(&list, "%s" PRI_SS, list.len ? ", " : "", SS_FMT(*k));
+    }
+    bib_field(&sb, "keywords", ss_from_sb(list));
+    sb_free(&list);
+
+    sb_appendf(&sb, "}\n");
+
+    print_heading(stdout, "BIBTEX");
+    ss_t rest = ss_from_sb(sb);
+    while (rest.len) print_line(stdout, ss_tok(&rest, '\n'));
+
+    int ret = 0;
+
+    if (arg_present(out_opt)) {
+      if (sb_write_to_file(arg_value(out_opt), &sb) < 0) {
+        print_heading(stderr, "ERROR");
+        print_line_fmt(stderr, "Could not write to file `%s`.", arg_value(out_opt));
+        ret = 1;
+      } else {
+        print_heading(stdout, "OUTPUT");
+        print_line_fmt(stdout, "Written to `%s`.", arg_value(out_opt));
+      }
+    }
+
+    if (arg_present(clip_opt)) {
+      if (!copy_to_clipboard(&sb)) {
+        print_heading(stderr, "ERROR");
+        print_line(stderr, ss_from_cstr("Could not copy to clipboard."));
+        ret = 1;
+      } else {
+        print_heading(stdout, "OUTPUT");
+        print_line(stdout, ss_from_cstr("Copied to clipboard."));
+      }
+    }
+
+    sb_free(&sb);
+    return ret;
+  }
+
+  print_heading(stderr, "ERROR");
+  print_line_fmt(stderr, "No source found with id `%s` in library `" PRI_SS "`.", arg_value(id_arg), SS_FMT(lib.name));
+
+  return 1;
+}
+
+int do_edit(const char* progname, int argc, char** argv) {
+  arg_clear_ctx();
+
+  library_t lib = { 0 };
+
+  size_t id_arg   = arg("id",   .type = "int", .desc = "ID of the source in the library. Use list command to get list of IDs." );
+
+  size_t lib_opt   = arg("lib",       .opt = true, .type = "str", .desc = "Path to library file.", .default_val = "library.toml");
+  size_t title_opt = arg("title",     .opt = true, .type = "str", .desc = "Specify the source title.", .default_val = "");
+  size_t path_opt  = arg("path",      .opt = true, .type = "str", .desc = "Specify the source path.", .default_val = "");
+  size_t url_opt   = arg("url",       .opt = true, .type = "str", .desc = "Specify the source url.", .default_val = "");
+  size_t doi_opt   = arg("doi",       .opt = true, .type = "str", .desc = "Specify the source doi.", .default_val = "");
+  size_t issn_opt  = arg("issn",      .opt = true, .type = "str", .desc = "Specify the source issn.", .default_val = "");
+  size_t abs_opt   = arg("abstract",  .opt = true, .type = "str", .desc = "Specify the source abstract.", .default_val = "");
+  size_t rel_opt   = arg("relevance", .opt = true, .type = "int", .desc = "Specify the source relevance.", .default_val = "0");
+  size_t year_opt  = arg("year",      .opt = true, .type = "int", .desc = "Specify the source year.", .default_val = "0");
+  size_t type_opt  = arg("type",      .opt = true, .type = "str", .desc = "Specify the source type.", .default_val = "");
+  size_t venue_opt = arg("venue",     .opt = true, .type = "str", .desc = "Specify the source venue.", .default_val = "");
+  size_t help_opt  = arg("help",      .opt = true, .type = "bool", .no_value = true, .desc = "Displays this page and exits with 0." );
+
+  if (!arg_parse(&argc, &argv, -1)) {
+    print_usage_command(stderr, progname, arg_progname());
+    print_args(stderr);
+    print_arg_last_error(stderr);
+    return 1;
+  }
+
+  if (arg_present(help_opt)) {
+    print_usage_command(stdout, progname, arg_progname());
+    print_args(stdout);
+    return 0;
+  }
+
+  int id = atoi(arg_value(id_arg));
+
+  if(!deserialize_library_from_file(arg_value(lib_opt), &lib)) return 1;
+
+  vec_foreach(s, &lib.sources) {
+    if (s->id != id) continue;
+
+    if(arg_present(title_opt)) s->title     = ss_from_cstr(arg_value(title_opt));
+    if(arg_present(path_opt))  s->path      = ss_from_cstr(arg_value(path_opt));
+    if(arg_present(abs_opt))   s->abstract  = ss_from_cstr(arg_value(abs_opt));
+    if(arg_present(url_opt))   s->url       = ss_from_cstr(arg_value(url_opt));
+    if(arg_present(doi_opt))   s->doi       = ss_from_cstr(arg_value(doi_opt));
+    if(arg_present(issn_opt))  s->issn      = ss_from_cstr(arg_value(issn_opt));
+    if(arg_present(rel_opt))   s->relevance = atoi(arg_value(rel_opt)); 
+    if(arg_present(year_opt))  s->year      = atoi(arg_value(year_opt)); 
+    if(arg_present(venue_opt)) s->venue     = ss_from_cstr(arg_value(venue_opt));
+    if(arg_present(type_opt))  s->type      = ss_from_cstr(arg_value(type_opt));
+
+    return !serialize_library_to_file(arg_value(lib_opt), &lib);
+  }
+
+  print_heading(stderr, "ERROR");
+  print_line_fmt(stderr, "No source found with id `%s` in library `" PRI_SS "`.", arg_value(id_arg), SS_FMT(lib.name));
+
+  return 1;
 }
 
 void print_command_list(FILE* stream);
@@ -335,6 +540,8 @@ command_t commands[] = {
   COMMAND("info",   do_info,   "Displays informations on a source."),
   COMMAND("search", do_search, "Search for a source."),
   COMMAND("add",    do_add,    "Adds a source to a library."),
+  COMMAND("edit",   do_edit,   "Edits a source."),
+  COMMAND("bibtex", do_bibtex, "Outputs a BibTeX entry for a source."),
   COMMAND("help",   do_help,   "Displays this page and exits with 0."),
 };
 

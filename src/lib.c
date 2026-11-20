@@ -17,8 +17,35 @@ static bool parse_field_bool(ss_t src) {
   return ss_eq_cstr(src, "true");
 }
 
+static void parse_field_str_array(ss_t* src, ss_vec_t* out) {
+  ss_t s = ss_advance_after(*src, "[");
+
+  while (s.len && *s.data != ']') {
+    char q = *s.data;
+    if (q == '"' || q == '\'') {
+      ss_advance_by_in_place(&s, 1);
+      const char* start = s.data;
+      while (s.len && *s.data != q) {
+        ss_advance_by_in_place(&s, (q == '"' && *s.data == '\\' && s.len > 1) ? 2 : 1);
+      }
+      vec_push(out, ss_from_extents(start, s.data));
+    }
+    if (s.len) ss_advance_by_in_place(&s, 1);
+  }
+
+  if (s.len) ss_advance_by_in_place(&s, 1);
+  *src = s;
+}
+
 #define TRY_PARSE(src, name, type) \
   if (ss_starts_with_cstr(src, # name)) { source->name = parse_field_ ## type(src); continue; }
+
+#define TRY_PARSE_ARRAY(line, src, name) \
+  if (ss_starts_with_cstr(line, # name)) { \
+    *src = ss_from_extents(line.data, src->data + src->len); \
+    parse_field_str_array(src, &source->name); \
+    continue; \
+  }
 
 static bool deserialize_source(ss_t* src, source_t* source) {
   while(src->len) {
@@ -33,78 +60,13 @@ static bool deserialize_source(ss_t* src, source_t* source) {
     TRY_PARSE(line, doi,        str);
     TRY_PARSE(line, issn,       str);
     TRY_PARSE(line, url,        str);
+    TRY_PARSE(line, year,       int);
+    TRY_PARSE(line, venue,      str);
+    TRY_PARSE(line, type,       str);
 
-    if (ss_starts_with_cstr(line, "tags")) {
-      line = ss_trim(ss_advance_after(line, "="));
-      line = ss_trim(ss_advance_after(line, "["));
-      
-      if (ss_starts_with_cstr(line, "]")) continue;
-
-      line = ss_trim(ss_advance_after(line, "\""));
-
-      vec_push(&source->tags, ss_tok(&line, '"'));
-      
-      if (ss_starts_with_cstr(line, "]")) continue;
-
-      while (line.len) {
-        line = ss_trim(ss_advance_after(line, ","));
-        line = ss_trim(ss_advance_after(line, "\""));
-
-        vec_push(&source->tags, ss_tok(&line, '"'));
-
-        if (ss_starts_with_cstr(line, "]")) break;
-      }
-
-      continue;
-    }
-
-    if (ss_starts_with_cstr(line, "keywords")) {
-      line = ss_trim(ss_advance_after(line, "="));
-      line = ss_trim(ss_advance_after(line, "["));
-      
-      if (ss_starts_with_cstr(line, "]")) continue;
-
-      line = ss_trim(ss_advance_after(line, "\""));
-
-      vec_push(&source->keywords, ss_tok(&line, '"'));
-      
-      if (ss_starts_with_cstr(line, "]")) continue;
-
-      while (line.len) {
-        line = ss_trim(ss_advance_after(line, ","));
-        line = ss_trim(ss_advance_after(line, "\""));
-
-        vec_push(&source->keywords, ss_tok(&line, '"'));
-
-        if (ss_starts_with_cstr(line, "]")) break;
-      }
-
-      continue;
-    }
-
-    if (ss_starts_with_cstr(line, "authors")) {
-      line = ss_trim(ss_advance_after(line, "="));
-      line = ss_trim(ss_advance_after(line, "["));
-      
-      if (ss_starts_with_cstr(line, "]")) continue;
-
-      line = ss_trim(ss_advance_after(line, "\""));
-
-      vec_push(&source->authors, ss_tok(&line, '"'));
-      
-      if (ss_starts_with_cstr(line, "]")) continue;
-
-      while (line.len) {
-        line = ss_trim(ss_advance_after(line, ","));
-        line = ss_trim(ss_advance_after(line, "\""));
-
-        vec_push(&source->authors, ss_tok(&line, '"'));
-
-        if (ss_starts_with_cstr(line, "]")) break;
-      }
-
-      continue;
-    }
+    TRY_PARSE_ARRAY(line, src, tags);
+    TRY_PARSE_ARRAY(line, src, keywords);
+    TRY_PARSE_ARRAY(line, src, authors);
 
     // found next table
     if (ss_starts_with_cstr(line, "[")) {
@@ -179,6 +141,10 @@ static void serialize_source(sb_t* sb, const source_t* source) {
   sb_appendf(sb, "issn = \"" PRI_SS "\"\n", SS_FMT(source->issn));
   sb_appendf(sb, "url = \"" PRI_SS "\"\n", SS_FMT(source->url));
   sb_appendf(sb, "abstract = \"" PRI_SS "\"\n", SS_FMT(source->abstract));
+
+  sb_appendf(sb, "year = %d\n", source->year);
+  sb_appendf(sb, "type = \"" PRI_SS "\"\n", SS_FMT(source->type));
+  sb_appendf(sb, "venue = \"" PRI_SS "\"\n", SS_FMT(source->venue));
 }
 
 void serialize_library(sb_t* sb, const library_t* library) {
