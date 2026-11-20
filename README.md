@@ -1,0 +1,3 @@
+# BibShelf
+
+CLI Bibliography organizer
