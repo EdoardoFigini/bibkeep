@@ -2,6 +2,7 @@
 #define MACROS_H
 
 #include <stdlib.h>
+#include <stdio.h>
 
 #define UNREACHABLE(fmt, ...) \
   do { \
@@ -14,6 +15,9 @@
     fprintf(stderr, "[FATAL] UNIMPLEMENTED\n  %s:%d: " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__);\
     abort();\
   } while(0);
+
+#define ASSERT(cnd, msg) \
+  (cnd ? 0 : (fprintf(stderr, "[FATAL] ASSERTION FAILED\n  %s:%d: " #cnd " failed.\n  " msg, __FILE__, __LINE__), abort()))
 
 #define MIN(a, b) \
   ((a) > (b) ? (b) : (a))
