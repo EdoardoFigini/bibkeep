@@ -115,6 +115,58 @@ int do_list(const char* progname, int argc, char** argv) {
   return 0;
 }
 
+void print_info(const source_t* s) {
+  sb_t sb = { 0 };
+  print_heading(stdout, "TITLE");
+  print_paragraph(stdout, s->title);
+
+  if (s->authors.len > 0) {
+    print_heading(stdout, "AUTHORS");
+    bool first = true;
+    vec_foreach(a, &s->authors) {
+      sb_appendf(&sb, "%s" PRI_SS, first ? "" : ", ", SS_FMT(*a));
+      first = false;
+    }
+    print_paragraph(stdout, ss_from_sb(sb));
+  }
+  sb_reset(&sb);
+
+  if (s->keywords.len > 0) {
+    print_heading(stdout, "KEYWORDS");
+    bool first = true;
+    vec_foreach(a, &s->keywords) {
+      sb_appendf(&sb, "%s" PRI_SS, first ? "" : ", ", SS_FMT(*a));
+      first = false;
+    }
+    print_paragraph(stdout, ss_from_sb(sb));
+  }
+  sb_reset(&sb);
+
+  if (s->abstract.len > 0) {
+    print_heading(stdout, "ABSTRACT");
+    print_paragraph(stdout, s->abstract);
+  }
+
+  if (s->path.len > 0) {
+    print_heading(stdout, "PATH");
+    print_line(stdout, s->path);
+  }
+
+  if (s->url.len > 0) {
+    print_heading(stdout, "URL");
+    print_line(stdout, s->url);
+  }
+
+  print_heading(stdout, "IDENTIFIERS");
+  print_line_fmt(stdout, "Lib Id: %d", s->id);
+  if (s->doi.len > 0)
+    print_line_fmt(stdout, "DOI:    " PRI_SS, SS_FMT(s->doi));
+  if (s->issn.len > 0)
+    print_line_fmt(stdout, "ISSN:   " PRI_SS, SS_FMT(s->issn));
+
+  sb_free(&sb);
+}
+
 int do_info(const char* progname, int argc, char** argv) {
   arg_clear_ctx();
 
@@ -149,55 +201,7 @@ int do_info(const char* progname, int argc, char** argv) {
   // NOTE: could I assume ids map to array indeces? lib.sources[id]
   vec_foreach(s, &library.sources) {
     if (s->id == id) {
-      sb_t sb = { 0 };
-      print_heading(stdout, "TITLE");
-      print_paragraph(stdout, s->title);
-
-      if (s->authors.len > 0) {
-        print_heading(stdout, "AUTHORS");
-        bool first = true;
-        vec_foreach(a, &s->authors) {
-          sb_appendf(&sb, "%s" PRI_SS, first ? "" : ", ", SS_FMT(*a));
-          first = false;
-        }
-        print_paragraph(stdout, ss_from_sb(sb));
-      }
-      sb_reset(&sb);
-
-      if (s->keywords.len > 0) {
-        print_heading(stdout, "KEYWORDS");
-        bool first = true;
-        vec_foreach(a, &s->keywords) {
-          sb_appendf(&sb, "%s" PRI_SS, first ? "" : ", ", SS_FMT(*a));
-          first = false;
-        }
-        print_paragraph(stdout, ss_from_sb(sb));
-      }
-      sb_reset(&sb);
-
-      if (s->abstract.len > 0) {
-        print_heading(stdout, "ABSTRACT");
-        print_paragraph(stdout, s->abstract);
-      }
-
-      if (s->path.len > 0) {
-        print_heading(stdout, "PATH");
-        print_line(stdout, s->path);
-      }
-
-      if (s->url.len > 0) {
-        print_heading(stdout, "URL");
-        print_line(stdout, s->url);
-      }
-
-      print_heading(stdout, "IDENTIFIERS");
-      print_line_fmt(stdout, "Lib Id: %d", s->id);
-      if (s->doi.len > 0)
-        print_line_fmt(stdout, "DOI:    " PRI_SS, SS_FMT(s->doi));
-      if (s->issn.len > 0)
-        print_line_fmt(stdout, "ISSN:   " PRI_SS, SS_FMT(s->issn));
-
-      sb_free(&sb);
+      print_info(s);
       return 0;
     }
   }
@@ -328,7 +332,14 @@ int do_add(const char* progname, int argc, char** argv) {
 
   vec_push(&lib.sources, source);
 
-  return !serialize_library_to_file(arg_value(lib_opt), &lib);
+  if(!serialize_library_to_file(arg_value(lib_opt), &lib)) {
+    print_heading(stderr, "ERROR");
+    print_line_fmt(stderr, "Could not write to file `%s`.", arg_value(lib_opt));
+    return 1;
+  }
+
+  print_info(&source);
+  return 0;
 }
 
 static void bib_field(sb_t* sb, const char* name, ss_t value) {
@@ -515,7 +526,14 @@ int do_edit(const char* progname, int argc, char** argv) {
     if(arg_present(venue_opt)) s->venue     = ss_from_cstr(arg_value(venue_opt));
     if(arg_present(type_opt))  s->type      = ss_from_cstr(arg_value(type_opt));
 
-    return !serialize_library_to_file(arg_value(lib_opt), &lib);
+    if(!serialize_library_to_file(arg_value(lib_opt), &lib)) {
+      print_heading(stderr, "ERROR");
+      print_line_fmt(stderr, "Could not write to file `%s`.", arg_value(lib_opt));
+      return 1;
+    }
+
+    print_info(s);
+    return 0;
   }
 
   print_heading(stderr, "ERROR");
@@ -624,13 +642,17 @@ void print_usage_command(FILE* stream, const char* progname, const char* command
 }
 
 void print_args(FILE* stream) {
-  print_heading(stream, "ARGS");
-  vec_foreach(a, arg_pos_args()) {
-    print_arg(stream, a);
+  if (arg_pos_args()->len) {
+    print_heading(stream, "ARGS");
+    vec_foreach(a, arg_pos_args()) {
+      print_arg(stream, a);
+    }
   }
-  print_heading(stream, "OPTIONS");
-  vec_foreach(a, arg_opt_args()) {
-    print_arg(stream, a);
+  if (arg_opt_args()->len) {
+    print_heading(stream, "OPTIONS");
+    vec_foreach(a, arg_opt_args()) {
+      print_arg(stream, a);
+    }
   }
 }
 
