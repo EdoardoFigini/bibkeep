@@ -524,6 +524,34 @@ int do_edit(const char* progname, int argc, char** argv) {
   return 1;
 }
 
+int do_new(const char* progname, int argc, char** argv) {
+  arg_clear_ctx();
+
+  library_t lib = { 0 };
+
+  size_t name_arg = arg("name", .type = "str", .desc = "Specify the name of the library.", .default_val = "My Library");
+
+  size_t lib_opt   = arg("lib",  .opt = true, .type = "str", .desc = "Path to library file.", .default_val = "library.toml");
+  size_t help_opt  = arg("help", .opt = true, .type = "bool", .no_value = true, .desc = "Displays this page and exits with 0." );
+
+  if (!arg_parse(&argc, &argv, -1)) {
+    print_usage_command(stderr, progname, arg_progname());
+    print_args(stderr);
+    print_arg_last_error(stderr);
+    return 1;
+  }
+
+  if (arg_present(help_opt)) {
+    print_usage_command(stdout, progname, arg_progname());
+    print_args(stdout);
+    return 0;
+  }
+
+  lib.name = ss_from_cstr(arg_value(name_arg)); 
+
+  return !serialize_library_to_file(arg_value(lib_opt), &lib);
+}
+
 void print_command_list(FILE* stream);
 
 int do_help(const char* progname, int argc, char** argv) {
@@ -541,6 +569,7 @@ command_t commands[] = {
   COMMAND("search", do_search, "Search for a source."),
   COMMAND("add",    do_add,    "Adds a source to a library."),
   COMMAND("edit",   do_edit,   "Edits a source."),
+  COMMAND("new",    do_new,    "Creates a new library."),
   COMMAND("bibtex", do_bibtex, "Outputs a BibTeX entry for a source."),
   COMMAND("help",   do_help,   "Displays this page and exits with 0."),
 };

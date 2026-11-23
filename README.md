@@ -29,6 +29,8 @@ COMMANDS
      info                     Displays informations on a source.
      search                   Search for a source.
      add                      Adds a source to a library.
+     edit                     Edits a source.
+     new                      Creates a new library.
      bibtex                   Outputs a BibTeX entry for a source.
      help                     Displays this page and exits with 0.
 ```
